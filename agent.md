@@ -1,234 +1,177 @@
+# Agent.md — Memo MCP サービス
+
+---
+
 # プロジェクト概要
 
-このリポジトリは、**FastAPI + fastapi\_mcp + ChromaDB + SentenceTransformer (デフォルト: `cl-nagoya/ruri-v3-30m`) + Redis** を組み合わせた MCP サーバの実装サンプルです。
-クライアント（LM/フロント）が送った会話・メモ（`text`）と任意の `summary`／`keywords` を受け取り、**summary があれば summary を、無ければ raw (`text`) を埋め込み対象**として ChromaDB に登録します。raw は短期 TTL（デフォルト 24 時間）で Redis に保存され、検索時は Chroma の類似検索結果に対して raw（存在すれば）を付与して返却します。
-
-この Agent.md は実装者（開発者・運用者）向けに設計方針、API、動作フロー、運用上の注意点、優先タスクを整理したドキュメントです。
+FastAPI + `fastapi_mcp` + ChromaDB + `sentence-transformers`（デフォルト: `cl-nagoya/ruri-v3-30m`）を用いた MCP サーバ実装。
+クライアント（LM/フロント）が送る `text`（原文）と任意の `summary`／`keywords`／`importance` を受け、**原文はサーバに保存せず**、要約または表現チャンクを埋め込み対象として ChromaDB に登録することで、プライバシーに配慮した RAG（知恵袋的検索）を提供する。
 
 ---
 
 # 目的
 
-* クライアント生成の要点（summary）を任意としつつ、**サーバ側は埋め込み生成と保存／検索に専念**するシンプルで拡張可能な設計を示す。
-* MCP（fastapi\_mcp）を通じてツールを公開し、エージェントから直接利用できるようにする。
-* ChromaDB によるベクトルストア管理と Redis による raw（短期）保持の組合せで、知恵袋的検索（RAG）を提供する。
+* クライアント側で生成した要点（summary）があればそれを、無ければ原文の表現チャンクを埋め込み化して保存する。
+* 原文をサーバに残さないことでプライバシーを保ちつつ検索可能な知識ベースを構築する。
+* `fastapi_mcp` により `/mcp` でツール公開し、エージェントから利用できるようにする。
+* Factory 形式 `create_app(no_auth=False, additional_modules=None)` を起点に拡張・モジュール追加が容易な設計とする。
 
 ---
 
-# 主要特徴（まとめ）
+# 要点（短く）
 
-* `summary` は **任意**。ある場合は summary を埋め込み、ない場合は `text`（raw）を埋め込み対象とする。
-* raw は Redis に TTL で保存（デフォルト 24h）。summary（もしくは raw を埋め込みした Chroma ドキュメント）は長期保持（Chroma に残る）を基本とする。
-* 長いテキストはチャンク分割して複数ドキュメントとして保存（`MAX_CHUNK_CHARS` による切分）。
-* 重複対策（オプション）として、保存時に類似度検出→マージ/スキップを実装可能。
-* operation\_id を明示した FastAPI エンドポイントで MCP に公開。
-
----
-
-# 制約
-
-* FastAPI + fastapi\_mcp を使用する。
-* ChromaDB は `PersistentClient`（ローカル永続化）で利用する。
-* 埋め込み生成は `sentence-transformers` 経由（デフォルト CPU）。GPU 利用は設定で切替可。
-* Redis は raw 一時保存のバックエンド（非必須だが推奨）。
-* 外部ライブラリは pip インストール可能なものに限定。
-* 認証は `HTTPBearer` によるトークン式をサポート（オン／オフ可能）。
-* Docker / docker-compose での動作を想定した構成を提供。
+* `summary` は任意（あればそれを埋め込み、なければ `text` をチャンク化して埋め込み）。
+* **raw（原文）は保存しない**。メタに `text_hash`（オプション）を残すのみ。
+* 検索は Chroma の類似検索で行い、結果には `summary/document`、`metadata`、`distance` を返す（`raw` は返さない）。
+* Factory で動的ルータ登録、`FastApiMCP(...).mount()` による MCP 公開。
 
 ---
 
-# アーキテクチャ（概要）
+# アーキテクチャ（概略）
 
 ```
-クライアント (LM/フロント)
-   └─ POST /memo/save  (text + optional summary)
-         ↓
-     FastAPI (/mcp)
-         ↓
-     MemoService
-       ├─ Redis (raw, TTL)
-       └─ ChromaDB (summary/raw embeddings, metadata)
-         ↑
-   GET /memo/search  ←─ embedding(query) ← MemoService
+Client (LM) -- POST /rag/memo/save --> FastAPI (create_app)
+                                         └─ routers/rag.py
+                                            └─ MemoService (Chroma + Embedder)
+                                                 ├─ ChromaDB (PersistentClient)
+                                                 └─ SentenceTransformer (embed)
+/mcp (FastApiMCP) で operation_id を公開
 ```
 
 ---
 
-# 設定（環境変数）
+# 主要 API（operation\_id 明示）
 
-* `REDIS_URL` (default: `redis://localhost:6379/0`)
-* `CHROMA_PATH` (default: `./chroma_db`) — Chroma 永続化パス
-* `EMBED_MODEL` (default: `cl-nagoya/ruri-v3-30m`)
-* `DEVICE` (`cpu`/`cuda`)
-* `MEMO_TTL_SECONDS` (default: `86400`) — raw の TTL
-* `MAX_CHUNK_CHARS` (default: `2000`) — 埋め込み対象を分割する閾値
-* `N_RESULTS_DEFAULT` (default: `5`) — 検索時のデフォルト件数
+* `POST /rag/memo/save` — **operation\_id="save\_memo"**
+  入力: `session_id` (必須), `text` (必須), `summary` (任意), `keywords` (任意), `importance` (任意)
+  出力: `{ memo_id, saved_at, chroma_ids, used_summary }`
+  挙動: summary があればそれを埋め込み対象、無ければ text をチャンク化して埋め込み。原文は保存しない（`text_hash` はオプションで保存可）。
+
+* `GET /rag/memo/search` — **operation\_id="query\_memo"**
+  クエリ: `query` (必須), `n_results` (任意, default=5)
+  出力: `{ query, results: [{ summary, metadata, distance }, ...] }`
+
+* `GET /rag/memo/get` — **operation\_id="get\_memo"**
+  パラメータ: `memo_id`
+  出力: Chroma に格納された document/chunk と metadata（原文は含まない）
+
+* `POST /rag/memo/delete` — **operation\_id="delete\_memo"**
+  入力: `{ memo_id }` → 該当 Chroma ドキュメント（チャンク含む）を削除
+
+* `GET /healthcheck` — **operation\_id="healthcheck"**
+  Chroma・埋め込みモデルロード等のヘルスを返す
+
+> すべて `/rag` プレフィックス下に配置し、`create_app` で router を include する。
 
 ---
 
-# データモデル
+# データモデル（Chroma metadata 例）
 
-**Redis: raw（hash）** — key: `memo:{memo_id}`
+`documents` は保存した要約またはチャンク化された表現テキスト。`metadatas` は最小限のメタ情報。
 
 ```json
 {
-  "memo_id": "<uuid>",
-  "session_id": "<string>",
-  "text": "<原文>",
-  "saved_at": "<ISO8601>",
-  "keywords": ["..."],
-  "importance": 0.8
-}
-```
-
-**Chroma: document / metadata / embedding**
-
-* `documents` は埋め込み対象テキスト（summary または raw chunk）
-* `metadatas` には以下を含める:
-
-```json
-{
-  "memo_id": "<uuid>",
-  "session_id": "<string>",
-  "chunk_index": 0,
-  "is_summary": true|false,
-  "keywords": [...],
-  "importance": 0.0,
-  "saved_at": "<ISO8601>"
-}
-```
-
----
-
-# API（operation\_id を明示したエンドポイント）
-
-> すべてのエンドポイントは `fastapi_mcp` を通じて `/mcp` に登録され、エージェントから検出可能。
-
-## 1. `POST /memo/save` — `operation_id="save_memo"`
-
-**用途**: raw (`text`) と任意の `summary` を送信して保存する。
-**Input (JSON)**:
-
-```json
-{
+  "memo_id": "uuid-xxxx",
   "session_id": "sess-1",
-  "text": "保存したい原文（必須）",
-  "summary": "任意の要約（nullable）",
-  "keywords": ["任意"],
-  "importance": 0.8
+  "chunk_index": 0,
+  "is_summary": true,
+  "keywords": ["API","MCP"],
+  "importance": 0.9,
+  "saved_at": "2025-08-10T12:34:56Z",
+  "text_hash": "sha256-..."  // オプション（原文はサーバに残さない）
 }
 ```
 
-**挙動**:
-
-1. `memo_id` を生成、`saved_at` を付与。
-2. Redis に `memo:{memo_id}` として raw を保存し TTL を設定。
-3. `embed_source = summary if summary else text`。`embed_source` を `MAX_CHUNK_CHARS` に基づいてチャンク化（必要時）。
-4. 各チャンクの埋め込みを生成（`SentenceTransformer`）し、Chroma に `ids`, `documents`, `metadatas`, `embeddings` を追加。
-   **Return**:
-
-```json
-{ "memo_id": "<uuid>", "saved_at": "<ISO8601>", "chroma_ids": ["memo_summary:<id>", ...], "used_summary": true|false }
-```
-
-## 2. `GET /memo/search` — `operation_id="query_memo"`
-
-**用途**: クエリを埋め込み化して Chroma で類似検索し、上位 `n_results` を返す（default 5）。
-**Params**: `query` (必須), `n_results` (任意)
-**挙動**:
-
-1. クエリを embedding 生成。
-2. Chroma に `query_embeddings` で検索。
-3. 結果の `metadatas` から `memo_id` を取り、Redis から raw を取得（存在すれば付与）。
-4. 各結果には `summary`（Chroma に登録された document）, `metadata`, `distance`（score）および `raw`（nullable）を返却。
-   **Return**:
+検索結果アイテム例：
 
 ```json
 {
-  "query": "〜",
-  "results": [
-    {
-      "summary": "...",
-      "metadata": {...},
-      "distance": 0.12,
-      "raw": { "memo_id": "...", "text": "...", ... }   // null の可能性あり
-    },
-    ...
-  ]
+  "summary": "要点：/memo/save が保存エンドポイントです。",
+  "metadata": { ... },
+  "distance": 0.123
 }
 ```
 
-## 3. `GET /memo/get` — `operation_id="get_memo"`
+---
 
-**用途**: `memo_id` で Redis に保存された raw を取得（TTL 切れなら 404）。
-**Params**: `memo_id`
-**Return**: raw hash
+# 設計方針（重要点）
 
-## 4. `POST /memo/delete` — `operation_id="delete_memo"`
-
-**用途**: `memo_id` で Redis raw と Chroma の該当ドキュメント（`memo_summary:<memo_id>` とチャンク）を削除。
-**Input**: `{ "memo_id": "<uuid>" }`
-**Return**: `{ "deleted": true }`
-
-## 5. `POST /memo/clear_expired` — `operation_id="clear_expired"`（管理用）
-
-**用途**: SQLite 等のバックアップストアを使う場合、期限切れの後処理を実行するための管理 API（Redis を利用している限り自動 TTL に依存するため任意）。
+* **プライバシー優先**：原文はサーバに残さない。必要なら `text_hash`（照合用、非復元）だけ保持。
+* **シンプルなサーバ責務**：テキスト生成はクライアント側に任せ、サーバは埋め込み生成・Chroma 登録・検索に特化。
+* **長文対応**：`MAX_CHUNK_CHARS` を定め、埋め込み対象が長い場合はチャンク化して複数ドキュメントとして登録。
+* **同期処理の扱い**：`SentenceTransformer` と Chroma の多くメソッドは同期的なため、FastAPI 内では threadpool で実行して非ブロッキング化する。
+* **Factory 形式**：`create_app(no_auth=False, additional_modules=None)` により認証のオン/オフとモジュール追加を起動時に設定可能。
 
 ---
 
-# 動作フロー（例）
+# 環境変数 / 設定（主なもの）
 
-## 保存フロー（summary 提供あり）
-
-1. クライアントが `POST /memo/save` に `text + summary + keywords` を送る。
-2. サーバは Redis に raw を保存（TTL）。
-3. サーバは summary の埋め込みを作成して Chroma に登録（metadata に memo\_id を含む）。
-4. サーバは `memo_id` を返す。
-
-## 保存フロー（summary 無し）
-
-1. クライアントが `POST /memo/save` に `text` のみを送る。
-2. サーバは Redis に raw を保存（TTL）。
-3. サーバは `text` を埋め込み対象にして（長ければチャンク化して）Chroma に登録。
-4. `memo_id` を返す。
-
-## 検索フロー
-
-1. クライアントが `GET /memo/search?query=...&n_results=5` を呼ぶ。
-2. サーバはクエリの埋め込みを作成 → Chroma に問い合わせ。
-3. Chroma が返した summary/metadata/distance を組み立て、各 `memo_id` について Redis から raw を付与（無ければ `null`）。
-4. 結果を返す（JSON）。
+* `CHROMA_PATH` (default `./chroma_db`)
+* `EMBED_MODEL` (default `cl-nagoya/ruri-v3-30m`)
+* `DEVICE` (`cpu`/`cuda`)
+* `MAX_CHUNK_CHARS` (default `2000`)
+* `N_RESULTS_DEFAULT` (default `5`)
+* `EMBED_THREAD_WORKERS` (default `2`)
+* `API_KEY`（optional、`create_app` の認証に利用）
 
 ---
 
-# 実装ファイル（想定）
+# セキュリティ / プライバシー
 
-* `main.py` — FastAPI アプリ、fastapi\_mcp マウント、エンドポイント定義、簡易認証（HTTPBearer）
-* `memo_service.py` — MemoService の実装（Redis 接続、Chroma 接続、埋め込み生成、分割ロジック、保存・検索・削除ロジック）
-* `requirements.txt` — 依存パッケージ
-* `Dockerfile` — API コンテナの定義
-* `docker-compose.yml` — redis + api（Chroma は API 内の永続フォルダに保存）
-* `tests/` — ユニットテスト（save/get/search/delete など、TDD を推奨）
-* `README.md` — 実行手順（Agent.md を元に生成）
+* `API_KEY` + `Depends(get_api_key)` による簡易認証をサポート（Factory の `no_auth` で無効化可）。
+* ログに原文を出力しない（metadata のみログ）。
+* 必要に応じて OAuth2/JWT への移行を推奨。
+* 原文を保存しないため、監査要件で原文保管が必要な場合は別途方針を確定する。
 
 ---
 
-# 優先タスク（実装オーダー）
+# 運用上の注意
 
-1. **save\_memo: summary 任意対応実装**（チャンク/埋め込みの分岐含む） — 既実装済みの `memo_service.save_memo` を summary optional にすること（最優先）。
-2. **search に distance（スコア）を返す** — Chroma の `distances` をレスポンスに含める。
-3. **/healthcheck エンドポイント追加** — `GET /healthcheck` : 依存サービス（Redis, Chroma）に接続できるか確認する簡易チェック。
-4. **TDD の整備** — `tests/` に save/get/search/delete のテストケースを作成（mock Redis/Chroma or 集約テスト）。
-5. **Docker Compose & docs** — `docker-compose.yml` と `README.md`（起動手順、env 設定）を用意する。
+* **要約（summary）をクライアント側で作ることを推奨**：検索精度と匿名性が向上する。
+* **重複検出**：保存時に近傍検索で類似度閾値を超える既存があればマージ/スキップするオプションを検討。
+* **バックアップ**：Chroma 永続ディレクトリのバックアップを用意（データの永続性）。
+* **モデルサイズ／起動時間**：SentenceTransformer のロードや依存インストールが時間/容量を使うため Docker イメージ設計に注意。
 
 ---
 
-# 運用上の注意事項・ベストプラクティス
+# 実行手順（簡易）
 
-* **長文（raw）の扱い**: モデルの入力長制限に注意。`text` が長い場合はサーバ側で `MAX_CHUNK_CHARS` によるチャンク化を行う（チャンクごとに Chroma ドキュメントを作る）。検索時は関連チャンクを結合してコンテキストを作るか、複数チャンクの上位を渡す。
-* **summary の推奨**: クライアント側で summary を生成する運用（推奨）。品質を上げるためにクライアント用の要約プロンプトテンプレートを配布する。
-* **重複検出**: 大量の同趣旨メモが発生する場合、保存時に Chroma で近傍検索して高類似度（例 0.95）であればマージする戦略を検討する。
-* **セキュリティ**: 本番では `HTTPBearer` の代わりに OAuth2 / JWT / API Gateway を導入し、監査ログを残す。
-* **TTL ポリシー**: raw は短期（24h）で良いが、プロダクションでは法令・コンプライアンスに応じた保持ポリシーを策定する。
-* **バックアップ**: Chroma のデータと Redis の永続化設定（RDB/AOF）を運用ポリシーに沿って設定する。
+1. 必要パッケージをインストール: `pip install -r requirements.txt`
+2. 環境変数を設定（`CHROMA_PATH` や `EMBED_MODEL`、`API_KEY` など）
+3. アプリ起動: `uvicorn app.factory:create_app --reload`（factory を適切に呼ぶコマンドに適合させる）
+4. Swagger: `http://127.0.0.1:8000/docs`、MCP: `http://127.0.0.1:8000/mcp`
 
+（運用では Docker Compose で Chroma データ用ボリュームをマウントすることを推奨）
+
+---
+
+# 優先タスク（開発順）
+
+1. `routers/rag.py` と Pydantic スキーマ実装（operation\_id を明示）
+2. `services/memo_service.py`（raw 非保存版）実装：チャンク化・埋め込み・Chroma 登録・検索（distance を返す）
+3. Factory (`create_app`) によるルータ登録と `FastApiMCP.mount()` の確認
+4. `GET /healthcheck` 実装（Chroma 接続・モデルロードチェック含む）
+5. ユニット & 統合テスト（save/search/get/delete/healthcheck）
+6. README, Docker Compose, テスト CI の整備
+
+---
+
+# 参考実装スニペット（要旨）
+
+* Factory（あなた提示の `create_app`）を起点に使用。
+* Router の例（骨子）:
+
+```python
+@router.post("/memo/save", operation_id="save_memo")
+async def save_memo(req: SaveReq):
+    return await memo_svc.save_memo(req.session_id, req.text, req.summary, req.keywords, req.importance)
+```
+
+* MemoService の特徴:
+
+  * `embed_source = summary if summary else text`
+  * `chunks = chunk_text(embed_source, MAX_CHUNK_CHARS)`
+  * `embeddings = await run_in_threadpool(embedder.encode, chunks)`
+  * `collection.add(ids, documents=chunks, metadatas=..., embeddings=embeddings)`
+
+---
