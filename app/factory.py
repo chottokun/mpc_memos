@@ -1,27 +1,43 @@
+"""
+Application Factory.
+
+This module contains the `create_app` factory function, which is the primary
+entry point for constructing and configuring the FastAPI application instance.
+Using a factory makes the application's setup modular and easy to test.
+"""
 import logging
 from typing import Optional, List
 from fastapi import FastAPI, Depends
-from fastapi_mcp import FastApiMCP
+
 from .settings import settings
 from .auth_helpers import get_api_key
-
-# Import the routers that we will populate in later steps
 from .routers import rag, health
+from fastapi_mcp import FastApiMCP
 
 def create_app(no_auth: bool = False, additional_modules: Optional[List[str]] = None) -> FastAPI:
     """
-    Application factory.
-    - Initializes FastAPI app.
-    - Sets up logging.
-    - Configures authentication.
-    - Mounts MCP.
-    - Includes routers.
+    Constructs and configures a new FastAPI application instance.
+
+    This factory handles:
+    - Initializing the FastAPI app with metadata.
+    - Setting up logging.
+    - Configuring API key authentication based on settings.
+    - Mounting the `fastapi_mcp` tool server.
+    - Including all necessary API routers (e.g., for RAG and health checks).
+
+    Args:
+        no_auth: If True, disables authentication for the created app instance,
+                 which is useful for testing. Defaults to False.
+        additional_modules: A placeholder for dynamically loading other
+                            router modules in the future. Not currently used.
+
+    Returns:
+        A fully configured FastAPI application instance.
     """
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
 
     # Determine auth dependencies based on the NO_AUTH flag in settings or the function parameter.
-    # The `get_api_key` dependency will be applied to all routes.
     use_auth = not (no_auth or settings.NO_AUTH)
     auth_dependencies = [Depends(get_api_key)] if use_auth else []
 
@@ -33,8 +49,6 @@ def create_app(no_auth: bool = False, additional_modules: Optional[List[str]] = 
     )
 
     # Mount MCP for exposing tools to agents
-    # The FastApiMCP constructor requires the FastAPI app instance.
-    # The mount() method is deprecated, so we use mount_http() instead.
     mcp = FastApiMCP(fastapi=app)
     mcp.mount_http(mount_path="/mcp")
 
@@ -49,6 +63,7 @@ def create_app(no_auth: bool = False, additional_modules: Optional[List[str]] = 
 
     @app.get("/", tags=["Root"])
     async def read_root():
+        """A simple root endpoint to confirm the service is running."""
         return {"message": "Welcome to the MCP Memo Service. Visit /docs or /mcp for more info."}
 
     logger.info(f"FastAPI app created. Authentication is {'ENABLED' if use_auth else 'DISABLED'}.")

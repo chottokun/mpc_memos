@@ -1,3 +1,10 @@
+"""
+API Router for RAG (Retrieval-Augmented Generation) Memo Endpoints.
+
+This module defines the API routes for all memo-related operations,
+including saving, searching, retrieving, and deleting memos. It uses the
+`MemoServiceNoRaw` to handle the business logic for each endpoint.
+"""
 from fastapi import APIRouter, Depends, Query
 from ..schemas import (
     SaveMemoRequest, SaveMemoResponse, SearchMemoResponse, GetMemoResponse,
@@ -22,11 +29,18 @@ memo_service = MemoServiceNoRaw()
 )
 async def save_memo(req: SaveMemoRequest):
     """
-    Saves a memo.
+    Saves a memo's content for semantic search.
 
-    - The raw `text` is used for embedding if no `summary` is provided, but it is **not** stored on the server.
-    - If a `summary` is provided, it will be used as the source for embedding.
-    - Returns a confirmation with the generated memo ID.
+    This endpoint takes a memo's raw text and optional summary. It generates
+    vector embeddings from the content and stores them in a database. The raw
+    `text` is **not** stored on the server, adhering to the privacy-first
+    design of the service.
+
+    Args:
+        req: A `SaveMemoRequest` object containing the memo data.
+
+    Returns:
+        A `SaveMemoResponse` object with details of the saved memo.
     """
     res = await memo_service.save_memo(
         session_id=req.session_id,
@@ -54,12 +68,17 @@ async def search_memo(
     )
 ):
     """
-    Searches for memos based on a query string, returning the most relevant results.
+    Searches for semantically similar memos based on a query string.
+
+    Args:
+        query: The text query to search for.
+        n_results: The maximum number of results to return.
+
+    Returns:
+        A `SearchMemoResponse` object containing the original query and a
+        list of search results.
     """
     return await memo_service.search(query=query, n_results=n_results)
-
-
-# Other endpoints (get, delete) will be added in subsequent steps.
 
 
 @router.get(
@@ -70,8 +89,16 @@ async def search_memo(
 )
 async def get_memo(memo_id: str = Query(..., description="The ID of the memo to retrieve.")):
     """
-    Retrieves the stored documents and metadata for a given memo_id.
-    This does not return the original raw text.
+    Retrieves the stored documents and metadata for a given memo ID.
+
+    This endpoint fetches all the chunks and their associated metadata that
+    were stored for a specific memo. It does not return the original raw text.
+
+    Args:
+        memo_id: The unique identifier of the memo to retrieve.
+
+    Returns:
+        A `GetMemoResponse` object with the memo's data.
     """
     return await memo_service.get_memo(memo_id=memo_id)
 
@@ -84,6 +111,15 @@ async def get_memo(memo_id: str = Query(..., description="The ID of the memo to 
 )
 async def delete_memo(req: DeleteMemoRequest):
     """
-    Deletes all documents and chunks associated with a given memo_id from the database.
+    Deletes all documents and chunks associated with a given memo ID.
+
+    This is an idempotent operation; it will succeed even if the memo does
+    not exist.
+
+    Args:
+        req: A `DeleteMemoRequest` object containing the memo_id.
+
+    Returns:
+        A `DeleteMemoResponse` confirming the deletion.
     """
     return await memo_service.delete_memo(memo_id=req.memo_id)
