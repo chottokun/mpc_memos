@@ -74,22 +74,19 @@ class MemoServiceNoRaw:
     async def save_memo(
         self,
         session_id: str,
-        text: str,
-        summary: Optional[str] = None,
+        memo: str,
         keywords: Optional[List[str]] = None,
         importance: float = 0.0
     ) -> SaveMemoResponse:
         """
         Saves a memo by embedding its content and storing it in ChromaDB.
 
-        The method determines the embedding source (summary, if provided, otherwise
-        the raw text), chunks it, generates embeddings, and adds the data to the
-        vector store.
+        This version only accepts a 'memo' field, which is directly used for
+        chunking and embedding. It also calculates and stores a TTL.
 
         Args:
             session_id: An identifier for the user session.
-            text: The raw text of the memo. This is used for hashing but not stored.
-            summary: An optional summary of the text. If provided, this is embedded.
+            memo: The text content of the memo to be saved and embedded.
             keywords: Optional list of keywords associated with the memo.
             importance: An optional float representing the memo's importance.
 
@@ -99,19 +96,19 @@ class MemoServiceNoRaw:
         loop = asyncio.get_running_loop()
 
         memo_id = str(uuid.uuid4())
-        saved_at = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expires_at = now + datetime.timedelta(days=settings.MEMO_TTL_DAYS)
 
-        embed_source = summary if summary else text
-        used_summary = bool(summary)
+        # The memo is the direct source for embedding
+        embed_source = memo
 
         # Step 1: Chunk the source text
         chunks = chunk_text(embed_source, settings.MAX_CHUNK_CHARS)
         if not chunks:
             return SaveMemoResponse(
                 memo_id=memo_id,
-                saved_at=saved_at,
-                chroma_ids=[],
-                used_summary=used_summary
+                saved_at=now,
+                chroma_ids=[]
             )
 
         # Step 2: Embed the chunks in a thread pool
@@ -127,11 +124,10 @@ class MemoServiceNoRaw:
                 "memo_id": memo_id,
                 "session_id": session_id,
                 "chunk_index": i,
-                "is_summary": used_summary,
                 "keywords": json.dumps(keywords or []),
                 "importance": importance,
-                "saved_at": saved_at.isoformat(),
-                "text_hash": get_text_hash(text)
+                "saved_at": now.isoformat(),
+                "expires_at": expires_at.isoformat(),
             }
             for i in range(len(chunks))
         ]
@@ -149,9 +145,8 @@ class MemoServiceNoRaw:
 
         return SaveMemoResponse(
             memo_id=memo_id,
-            saved_at=saved_at,
+            saved_at=now,
             chroma_ids=chroma_ids,
-            used_summary=used_summary
         )
 
     async def search(self, query: str, n_results: int = 5) -> SearchMemoResponse:
@@ -185,7 +180,7 @@ class MemoServiceNoRaw:
         if query_results and query_results['ids'][0]:
             for i, doc_id in enumerate(query_results['ids'][0]):
                 results.append(SearchResultItem(
-                    summary=query_results['documents'][0][i],
+                    memo=query_results['documents'][0][i],
                     metadata=query_results['metadatas'][0][i],
                     distance=query_results['distances'][0][i]
                 ))
@@ -239,3 +234,45 @@ class MemoServiceNoRaw:
         )
 
         return DeleteMemoResponse(deleted=True, memo_id=memo_id)
+
+    async def cleanup_expired_memos(self) -> int:
+        """
+        Deletes all memos that have passed their TTL.
+
+        This method queries the database for memos where the `expires_at`
+        timestamp is in the past, and then deletes them.
+
+        Returns:
+            The number of memos (i.e., groups of chunks) that were deleted.
+        """
+        loop = asyncio.get_running_loop()
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        # ChromaDB doesn't have a direct "less than" for ISO strings, so we query
+        # all and filter in Python. This is not efficient for large datasets.
+        # A better approach in a real production system might be to store
+        # timestamps as Unix timestamps (integers or floats) for direct querying.
+        # For this implementation, we'll proceed with the less efficient filter.
+
+        all_memos = await loop.run_in_executor(
+            self.executor,
+            self.collection.get
+        )
+
+        expired_memo_ids = set()
+        if all_memos:
+            for i, metadata in enumerate(all_memos.get('metadatas', [])):
+                if metadata and 'expires_at' in metadata:
+                    if metadata['expires_at'] < now_iso:
+                        expired_memo_ids.add(metadata['memo_id'])
+
+        if not expired_memo_ids:
+            return 0
+
+        # Delete the expired memos by their IDs
+        await loop.run_in_executor(
+            self.executor,
+            lambda: self.collection.delete(where={"memo_id": {"$in": list(expired_memo_ids)}})
+        )
+
+        return len(expired_memo_ids)

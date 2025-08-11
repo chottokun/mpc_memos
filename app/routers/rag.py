@@ -8,7 +8,7 @@ including saving, searching, retrieving, and deleting memos. It uses the
 from fastapi import APIRouter, Depends, Query
 from ..schemas import (
     SaveMemoRequest, SaveMemoResponse, SearchMemoResponse, GetMemoResponse,
-    DeleteMemoRequest, DeleteMemoResponse
+    DeleteMemoRequest, DeleteMemoResponse, CleanupResponse
 )
 from ..services.memo_service import MemoServiceNoRaw
 from ..settings import settings
@@ -31,10 +31,8 @@ async def save_memo(req: SaveMemoRequest):
     """
     Saves a memo's content for semantic search.
 
-    This endpoint takes a memo's raw text and optional summary. It generates
-    vector embeddings from the content and stores them in a database. The raw
-    `text` is **not** stored on the server, adhering to the privacy-first
-    design of the service.
+    This endpoint takes a memo's content, generates vector embeddings from it,
+    and stores them in the database along with a Time-to-Live (TTL).
 
     Args:
         req: A `SaveMemoRequest` object containing the memo data.
@@ -44,8 +42,7 @@ async def save_memo(req: SaveMemoRequest):
     """
     res = await memo_service.save_memo(
         session_id=req.session_id,
-        text=req.text,
-        summary=req.summary,
+        memo=req.memo,
         keywords=req.keywords,
         importance=req.importance
     )
@@ -123,3 +120,18 @@ async def delete_memo(req: DeleteMemoRequest):
         A `DeleteMemoResponse` confirming the deletion.
     """
     return await memo_service.delete_memo(memo_id=req.memo_id)
+
+
+@router.post(
+    "/memos/cleanup",
+    operation_id="cleanup_expired_memos",
+    response_model=CleanupResponse,
+    summary="Cleanup expired memos"
+)
+async def cleanup_expired_memos():
+    """
+    Triggers a cleanup process to delete all memos that have passed their TTL.
+    This is an administrative endpoint.
+    """
+    deleted_count = await memo_service.cleanup_expired_memos()
+    return CleanupResponse(deleted_count=deleted_count)

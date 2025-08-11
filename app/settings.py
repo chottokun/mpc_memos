@@ -27,6 +27,7 @@ class Settings(BaseSettings):
         MAX_CHUNK_CHARS: The maximum number of characters for a single text chunk.
         N_RESULTS_DEFAULT: The default number of search results to return.
         EMBED_THREAD_WORKERS: The number of worker threads for blocking tasks.
+        MEMO_TTL_DAYS: The number of days after which a memo is considered expired.
     """
     API_KEY: Optional[str] = None
     NO_AUTH: bool = False
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     MAX_CHUNK_CHARS: int = 2000
     N_RESULTS_DEFAULT: int = 5
     EMBED_THREAD_WORKERS: int = 2
+    MEMO_TTL_DAYS: int = 30
 
     class Config:
         """Pydantic configuration options."""

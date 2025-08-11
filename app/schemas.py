@@ -5,17 +5,19 @@ This module defines the data structures used for validating API requests and
 serializing API responses. These Pydantic models ensure that data conforms to
 the expected schema and provide clear, automatic documentation for the API.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 import datetime
 
 # === Request Models ===
 
 class SaveMemoRequest(BaseModel):
-    """Request model for the `save_memo` endpoint."""
+    """
+    Request model for the `save_memo` endpoint.
+    The `memo` field is the primary content to be saved and embedded.
+    """
     session_id: str
-    text: str
-    summary: Optional[str] = None
+    memo: str  # Changed from 'summary' and is now required
     keywords: Optional[List[str]] = None
     importance: float = 0.0
 
@@ -30,11 +32,10 @@ class SaveMemoResponse(BaseModel):
     memo_id: str
     saved_at: datetime.datetime
     chroma_ids: List[str]
-    used_summary: bool
 
 class SearchResultItem(BaseModel):
     """Represents a single search result item."""
-    summary: str  # The document content (summary or chunk)
+    memo: str  # This field holds the stored 'memo' content
     metadata: Dict[str, Any]
     distance: float
 
@@ -58,3 +59,7 @@ class HealthCheckResponse(BaseModel):
     """Response model for the `healthcheck` endpoint."""
     status: str
     checks: Dict[str, bool]
+
+class CleanupResponse(BaseModel):
+    """Response model for the cleanup endpoint."""
+    deleted_count: int
