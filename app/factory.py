@@ -48,9 +48,7 @@ def create_app(no_auth: bool = False, additional_modules: Optional[List[str]] = 
         dependencies=auth_dependencies,
     )
 
-    # Mount MCP for exposing tools to agents
-    mcp = FastApiMCP(fastapi=app)
-    mcp.mount()
+
 
     # Include core routers
     app.include_router(rag.router, prefix="/rag", tags=["RAG Memo"])
@@ -67,5 +65,16 @@ def create_app(no_auth: bool = False, additional_modules: Optional[List[str]] = 
         return {"message": "Welcome to the MCP Memo Service. Visit /docs or /mcp for more info."}
 
     logger.info(f"FastAPI app created. Authentication is {'ENABLED' if use_auth else 'DISABLED'}.")
+
+    # Mount MCP for exposing tools to agents
+    mcp = FastApiMCP(
+        fastapi=app,
+        name="MCP Memo Server",
+        description="Memo機能を提供するサーバー",
+        describe_all_responses=True,
+        describe_full_response_schema=True,
+        )
+    
+    mcp.mount()
 
     return app
