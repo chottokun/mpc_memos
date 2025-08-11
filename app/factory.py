@@ -50,7 +50,7 @@ def create_app(no_auth: bool = False, additional_modules: Optional[List[str]] = 
 
     # Mount MCP for exposing tools to agents
     mcp = FastApiMCP(fastapi=app)
-    mcp.mount_http(mount_path="/mcp")
+    mcp.mount()
 
     # Include core routers
     app.include_router(rag.router, prefix="/rag", tags=["RAG Memo"])
