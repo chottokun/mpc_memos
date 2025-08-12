@@ -2,9 +2,9 @@
 
 ## 1. Overview
 
-This project is a FastAPI application that provides a privacy-focused, ephemeral Memo Service. It allows clients (like AI agents or frontends) to save, search, and manage textual memos that have a configurable Time-to-Live (TTL).
+This project is a FastAPI application that provides a privacy-focused, ephemeral Memo Service. It allows clients (like AI agents or frontends) to save, search, and manage textual memos with a configurable Time-to-Live (TTL).
 
-The core design principle is **privacy by design**: the server only accepts a `memo` content field and does not handle or store any other form of raw user text. This allows for powerful semantic search capabilities on short-term notes without holding sensitive raw data.
+The core design principle is **minimalism**: the server primarily focuses on the `memo` content, which enables powerful semantic search capabilities for short-term notes.
 
 The API is also exposed as a set of tools for AI agents using `fastapi-mcp`.
 
@@ -14,7 +14,7 @@ The API is also exposed as a set of tools for AI agents using `fastapi-mcp`.
 - **Semantic Search**: Search for memos based on meaning using vector embeddings.
 - **Agent-Ready**: Endpoints are exposed as tools via `/mcp` for easy integration with AI agents.
 - **Standard API**: A simple and clean RESTful API for managing memos (`save`, `search`, `get`, `delete`, `cleanup`).
-- **Containerized**: Comes with a `Dockerfile` and `docker-compose.yml` for easy and reproducible deployment.
+- **Containerized**: Includes a `Dockerfile` and `docker-compose.yml` for easy and reproducible deployment.
 - **Configurable**: Uses environment variables for configuration, including optional API key authentication and memo TTL.
 
 ## 3. API Endpoints
@@ -23,7 +23,7 @@ The API is also exposed as a set of tools for AI agents using `fastapi-mcp`.
 |--------|-----------------------|-------------------------|----------------------------------------------------|
 | `POST` | `/rag/memo/save`      | `save_memo`             | Saves a new memo with a TTL.                       |
 | `GET`  | `/rag/memo/search`    | `query_memo`            | Searches for memos by a query string.              |
-| `GET`  | `/rag/memo/get`       | `get_memo`              | Retrieves stored documents and metadata for a memo.|
+| `GET`  | `/rag/memo/get`       | `get_memo`              | Retrieves the content and metadata for a specific memo. |
 | `POST` | `/rag/memo/delete`    | `delete_memo`           | Deletes a specific memo by its ID.                 |
 | `POST` | `/rag/memos/cleanup`  | `cleanup_expired_memos` | Deletes all memos that have passed their TTL.      |
 | `GET`  | `/healthcheck`        | `healthcheck`           | Checks the operational status of the service.      |
@@ -74,7 +74,7 @@ The application can be configured using a `.env` file in the project root or by 
 | `DEVICE`                 | The device to run the embedding model on (`cpu` or `cuda`).              | `cpu`                    |
 | `MAX_CHUNK_CHARS`        | The maximum number of characters per chunk when embedding a memo.        | `2000`                   |
 | `N_RESULTS_DEFAULT`      | The default number of results to return for search queries.              | `5`                      |
-| `EMBED_THREAD_WORKERS`   | The number of threads to use for running blocking tasks like embedding.  | `2`                      |
+| `EMBED_THREAD_WORKERS`   | The number of worker threads for background tasks like embedding.        | `2`                      |
 | `MEMO_TTL_DAYS`          | The number of days after which a memo is considered expired.             | `30`                     |
 
 
@@ -122,3 +122,8 @@ curl -X 'POST' \
   'http://localhost:8000/rag/memos/cleanup' \
   -H 'accept: application/json'
 ```
+
+## 7. Acknowledgements
+
+This project was made possible by the `fastapi_mcp` library. Our thanks go to its developers and contributors.
+https://github.com/tadata-org/fastapi_mcp
