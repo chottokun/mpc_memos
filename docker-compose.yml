@@ -11,7 +11,7 @@ services:
       # Mount the chroma_db directory to persist data
       - ./chroma_db:/code/chroma_db
       # Optional: Mount the source code for live-reloading during development
-      # - ./app:/code/app
+      - ./app:/code/app
     environment:
       # Example of setting environment variables
       # Create a .env file to manage these locally
@@ -19,4 +19,4 @@ services:
       # - API_KEY=your_secret_api_key
       # - NO_AUTH=False
     # The command can be overridden for development to enable --reload
-    # command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
